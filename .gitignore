@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+dist/
+
+# Local guild data and logs
+data/
+*.log
+
+# Sub-projects (tracked in separate repository sora-web)
+web/
+
+# Environment variables
+.env*
+!.env.example
+
+# OS and Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Strict user rule: exclude all .txt and .md files except README.md
+*.txt
+*.md
+!README.md
