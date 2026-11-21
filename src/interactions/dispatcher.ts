@@ -21,6 +21,7 @@ import { CaptchaService } from "../services/captcha.js";
 import { PointsService } from "../services/points.js";
 import { TicketService } from "../services/tickets.js";
 import { EMOJI_STRINGS } from "../constants/emojis.js";
+import { updownSessions, typingSessions } from "../commands/games.js";
 
 // Ephemeral in-memory wizard states for multi-step configuration
 const wizardStates: Map<string, any> = new Map();
@@ -327,6 +328,73 @@ async function handleButton(interaction: ButtonInteraction) {
     return;
   }
 
+  // UP/DOWN MINI-GAME BUTTONS
+  if (customId === "updown_guess_btn") {
+    const session = updownSessions.get(user.id);
+    if (!session) {
+      await interaction.reply({
+        content: "진행 중인 업다운 게임이 없습니다. `/미니게임 업다운`으로 시작하세요.",
+        ephemeral: true,
+      });
+      return;
+    }
+    const modal = new ModalBuilder()
+      .setCustomId("modal_updown_guess")
+      .setTitle("업다운 숫자 추측")
+      .addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(
+          new TextInputBuilder()
+            .setCustomId("guess_input")
+            .setLabel(`1부터 ${session.max} 사이의 숫자 입력`)
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(5)
+        )
+      );
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (customId === "updown_quit_btn") {
+    const session = updownSessions.get(user.id);
+    if (!session) {
+      await interaction.reply({ content: "진행 중인 게임이 없습니다.", ephemeral: true });
+      return;
+    }
+    updownSessions.delete(user.id);
+    await interaction.reply({
+      content: `게임을 포기하셨습니다. 정답은 **${session.target}**였습니다.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // TYPING MINI-GAME BUTTONS
+  if (customId === "typing_submit_btn") {
+    const session = typingSessions.get(user.id);
+    if (!session) {
+      await interaction.reply({
+        content: "진행 중인 타자 연습이 없습니다. `/미니게임 타자연습`으로 시작하세요.",
+        ephemeral: true,
+      });
+      return;
+    }
+    const modal = new ModalBuilder()
+      .setCustomId("modal_typing_submit")
+      .setTitle("타자 연습 문장 입력")
+      .addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(
+          new TextInputBuilder()
+            .setCustomId("typing_input")
+            .setLabel("제시된 문장을 그대로 입력하세요")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true)
+        )
+      );
+    await interaction.showModal(modal);
+    return;
+  }
+
   // PHONE VERIFICATION: Step 1 - Consent Screen
   if (customId === "user_verify_phone") {
     const container = ComponentsV2Builder.container(
@@ -400,17 +468,38 @@ async function handleButton(interaction: ButtonInteraction) {
       if (statusRes.status === "verified") {
         const data = StorageManager.getGuildData(guild.id);
         const sessionRecord = data.verificationSessions.find((s) => s.id === vrfId);
-        const roleId = sessionRecord?.roleId || data.verification.roleMappings["phone"];
+        let roleId = sessionRecord?.roleId || data.verification.roleMappings["phone"];
 
-        if (roleId) {
-          const member = await guild.members.fetch(user.id);
-          await member.roles.add(roleId);
+        if (!roleId) {
+          const fallbackRole = guild.roles.cache.find(
+            (r) => r.name === "유저" || r.name === "인증" || r.name.toLowerCase() === "member"
+          );
+          if (fallbackRole) {
+            roleId = fallbackRole.id;
+            data.verification.roleMappings["phone"] = roleId;
+            StorageManager.saveGuildData(data);
+          }
         }
+
+        let roleAssigned = false;
+        if (roleId) {
+          try {
+            const member = await guild.members.fetch(user.id);
+            await member.roles.add(roleId);
+            roleAssigned = true;
+          } catch (e) {
+            console.warn("Could not assign phone role:", e);
+          }
+        }
+
+        const roleText = roleAssigned
+          ? `<@&${roleId}> 역할이 정상 지급되었습니다!`
+          : "휴대폰 소유권이 확인되었습니다!";
 
         const successContainer = ComponentsV2Builder.container(
           [
             ComponentsV2Builder.text(
-              `# ${EMOJI_STRINGS.CHECK} 휴대폰 인증 성공!\n인증이 성공적으로 완료되었습니다.\n• **통신사/완료시각:** ${statusRes.carrier || "확인됨"} (${statusRes.verified_at})\n인증 역할이 정상 지급되었습니다!\n\n> 💡 Sora의 모든 기능을 이용하시면 [개인정보처리방침](https://sora.koharu.live/policy) 및 [이용약관](https://sora.koharu.live/terms)에 동의하시는 것으로 간주합니다.`
+              `# ${EMOJI_STRINGS.CHECK} 휴대폰 인증 성공!\n인증이 성공적으로 완료되었습니다.\n• **통신사/완료시각:** ${statusRes.carrier || "확인됨"} (${statusRes.verified_at})\n• ${roleText}\n\n> 💡 Sora의 모든 기능을 이용하시면 [개인정보처리방침](https://sora.koharu.live/policy) 및 [이용약관](https://sora.koharu.live/terms)에 동의하시는 것으로 간주합니다.`
             ),
           ],
           0x57f287
@@ -739,17 +828,39 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction) {
       emailSessions.delete(`${guild.id}_${user.id}`);
 
       const data = StorageManager.getGuildData(guild.id);
-      const roleId = session.roleId || data.verification.roleMappings["email"];
+      let roleId = session.roleId || data.verification.roleMappings["email"];
 
-      if (roleId) {
-        const member = await guild.members.fetch(user.id);
-        await member.roles.add(roleId);
+      // Fallback: search for "유저" or "인증" role if roleId is not mapped
+      if (!roleId) {
+        const fallbackRole = guild.roles.cache.find(
+          (r) => r.name === "유저" || r.name === "인증" || r.name.toLowerCase() === "member"
+        );
+        if (fallbackRole) {
+          roleId = fallbackRole.id;
+          data.verification.roleMappings["email"] = roleId;
+          StorageManager.saveGuildData(data);
+        }
       }
+
+      let roleAssigned = false;
+      if (roleId) {
+        try {
+          const member = await guild.members.fetch(user.id);
+          await member.roles.add(roleId);
+          roleAssigned = true;
+        } catch (e) {
+          console.warn("Could not assign email role:", e);
+        }
+      }
+
+      const roleMsg = roleAssigned
+        ? `<@&${roleId}> 역할이 정상 지급되었습니다!`
+        : "이메일 소유권이 확인되었습니다!";
 
       const successContainer = ComponentsV2Builder.container(
         [
           ComponentsV2Builder.text(
-            `# ${EMOJI_STRINGS.CHECK} 이메일 인증 성공!\n<@${user.id}> 님, 이메일 소유권이 확인되어 <@&${roleId}> 역할이 정상 지급되었습니다!\n\n> 💡 Sora의 모든 기능을 이용하시면 [개인정보처리방침](https://sora.koharu.live/policy) 및 [이용약관](https://sora.koharu.live/terms)에 동의하시는 것으로 간주합니다.`
+            `# ${EMOJI_STRINGS.CHECK} 이메일 인증 성공!\n<@${user.id}> 님, 본인 소유 이메일 인증이 완료되었습니다!\n\n• ${roleMsg}\n\n> 💡 Sora의 모든 기능을 이용하시면 [개인정보처리방침](https://sora.koharu.live/policy) 및 [이용약관](https://sora.koharu.live/terms)에 동의하시는 것으로 간주합니다.`
           ),
         ],
         0x57f287
@@ -759,6 +870,70 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction) {
     } else {
       await interaction.reply({
         content: `인증 코드가 일치하지 않습니다. 이메일을 다시 확인해 주세요. (입력값: ${enteredCode})`,
+        ephemeral: true,
+      });
+    }
+    return;
+  }
+
+  // MODAL: UP/DOWN GUESS
+  if (customId === "modal_updown_guess") {
+    const session = updownSessions.get(user.id);
+    if (!session) {
+      await interaction.reply({ content: "진행 중인 업다운 게임 세션이 없습니다.", ephemeral: true });
+      return;
+    }
+
+    const val = parseInt(interaction.fields.getTextInputValue("guess_input").trim(), 10);
+    if (isNaN(val)) {
+      await interaction.reply({ content: "올바른 숫자를 입력해 주세요.", ephemeral: true });
+      return;
+    }
+
+    session.attempts++;
+    if (val < session.target) {
+      await interaction.reply({
+        content: `⬆️ **UP!** 정답은 **${val}**보다 큽니다. (현재 시도: ${session.attempts}회)`,
+        ephemeral: true,
+      });
+    } else if (val > session.target) {
+      await interaction.reply({
+        content: `⬇️ **DOWN!** 정답은 **${val}**보다 작습니다. (현재 시도: ${session.attempts}회)`,
+        ephemeral: true,
+      });
+    } else {
+      updownSessions.delete(user.id);
+      const reward = Math.max(100, 1000 - session.attempts * 100);
+      PointsService.addPoints(guild.id, user.id, reward);
+      await interaction.reply({
+        content: `🎉 **정답입니다!** 숫자 **${val}**을(를) **${session.attempts}회** 만에 맞추셨습니다!\n획득 보상: **+${reward.toLocaleString()}P**`,
+      });
+    }
+    return;
+  }
+
+  // MODAL: TYPING PRACTICE SUBMIT
+  if (customId === "modal_typing_submit") {
+    const session = typingSessions.get(user.id);
+    if (!session) {
+      await interaction.reply({ content: "진행 중인 타자 연습 세션이 없습니다.", ephemeral: true });
+      return;
+    }
+
+    const input = interaction.fields.getTextInputValue("typing_input").trim();
+    const elapsedSec = (Date.now() - session.startTime) / 1000;
+    typingSessions.delete(user.id);
+
+    if (input === session.sentence) {
+      const cpm = Math.round((input.length / elapsedSec) * 60);
+      const reward = 200;
+      PointsService.addPoints(guild.id, user.id, reward);
+      await interaction.reply({
+        content: `🎉 **타자 연습 완주 성공!** 정확도 **100%**!\n• **소요 시간:** ${elapsedSec.toFixed(2)}초\n• **타수 (CPM):** 약 ${cpm}타/분\n• **보상:** **+${reward}P**`,
+      });
+    } else {
+      await interaction.reply({
+        content: `❌ 제시된 문장과 일치하지 않습니다.\n• 제시문: \`${session.sentence}\`\n• 입력값: \`${input}\``,
         ephemeral: true,
       });
     }

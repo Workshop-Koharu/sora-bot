@@ -25,12 +25,7 @@ function buildSummary(
   return ComponentsV2Builder.container(
     [
       ComponentsV2Builder.text(
-        `# ${EMOJI_STRINGS.KCS} 서버 운영 ${periodName} 요약 보고서\n**집계 기간:** ${startIso} ~ ${endIso}\n**기준:** 서버 내 주요 운영 로그 및 지표 집계\n\n• **신규 경고 조치:** ${recentWarns.length}건\n• **신규 생성 티켓:** ${recentTickets.length}건\n• **활동 집계 멤버:** ${activeMembers}명\n• **누적 위키 문서:** ${data.wikiDocuments.length}개\n• **현재 서버 멤버:** ${interaction.guild?.memberCount.toLocaleString()}명`
-      ),
-      ComponentsV2Builder.separator(true, 1),
-      ComponentsV2Builder.actionRow(
-        ComponentsV2Builder.emojiButton("SEARCH", `summary_detail_audit_${days}`),
-        ComponentsV2Builder.emojiButton("SHARE", `summary_export_${days}`)
+        `# ${EMOJI_STRINGS.KCS} 서버 운영 ${periodName} 요약 보고서\n**집계 기간:** ${startIso} ~ ${endIso}\n\n• **신규 경고 조치:** ${recentWarns.length}건\n• **신규 생성 티켓:** ${recentTickets.length}건\n• **활동 집계 멤버:** ${activeMembers}명\n• **누적 위키 문서:** ${data.wikiDocuments.length}개\n• **현재 서버 멤버:** ${interaction.guild?.memberCount.toLocaleString()}명`
       ),
     ],
     0x5865f2
@@ -38,53 +33,38 @@ function buildSummary(
 }
 
 export const summaryCommands = [
-  // 19. /일일요약
+  // /요약 [일일 | 주간 | 월간]
   {
     data: new SlashCommandBuilder()
-      .setName("일일요약")
-      .setDescription("최근 24시간 동안의 핵심 운영 지표 요약을 조회합니다. (관리자 전용)")
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+      .setName("요약")
+      .setDescription("서버 운영 지표 요약 보고서를 조회합니다. (관리자 전용)")
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addSubcommand((sub) => sub.setName("일일").setDescription("최근 24시간 동안의 운영 지표 요약"))
+      .addSubcommand((sub) => sub.setName("주간").setDescription("최근 7일 동안의 운영 지표 요약"))
+      .addSubcommand((sub) => sub.setName("월간").setDescription("최근 30일 동안의 운영 지표 요약")),
 
     async execute(interaction: ChatInputCommandInteraction) {
       if (!interaction.guild || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-        await interaction.reply({ content: "관리자 권한이 부족합니다.", ephemeral: true });
+        await interaction.reply({ content: "관리자 권한이 필요합니다.", ephemeral: true });
         return;
       }
-      const container = buildSummary(interaction, "일일", 1);
-      await interaction.reply(ComponentsV2Builder.formatMessage(container, true));
-    },
-  },
 
-  // 20. /주간요약
-  {
-    data: new SlashCommandBuilder()
-      .setName("주간요약")
-      .setDescription("최근 7일 동안의 핵심 운영 지표 요약을 조회합니다. (관리자 전용)")
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+      const subcommand = interaction.options.getSubcommand();
+      let days = 1;
+      let name: "일일" | "주간" | "월간" = "일일";
 
-    async execute(interaction: ChatInputCommandInteraction) {
-      if (!interaction.guild || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-        await interaction.reply({ content: "관리자 권한이 부족합니다.", ephemeral: true });
-        return;
+      if (subcommand === "일일") {
+        days = 1;
+        name = "일일";
+      } else if (subcommand === "주간") {
+        days = 7;
+        name = "주간";
+      } else if (subcommand === "월간") {
+        days = 30;
+        name = "월간";
       }
-      const container = buildSummary(interaction, "주간", 7);
-      await interaction.reply(ComponentsV2Builder.formatMessage(container, true));
-    },
-  },
 
-  // 21. /월간요약
-  {
-    data: new SlashCommandBuilder()
-      .setName("월간요약")
-      .setDescription("최근 30일 동안의 핵심 운영 지표 요약을 조회합니다. (관리자 전용)")
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-    async execute(interaction: ChatInputCommandInteraction) {
-      if (!interaction.guild || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-        await interaction.reply({ content: "관리자 권한이 부족합니다.", ephemeral: true });
-        return;
-      }
-      const container = buildSummary(interaction, "월간", 30);
+      const container = buildSummary(interaction, name, days);
       await interaction.reply(ComponentsV2Builder.formatMessage(container, true));
     },
   },

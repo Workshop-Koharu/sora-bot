@@ -9,188 +9,89 @@ import { ComponentsV2Builder } from "../components-v2/builder.js";
 import { EMOJI_STRINGS } from "../constants/emojis.js";
 
 export const channelCommands = [
-  // 1. /채널잠금
+  // /채널 [잠금 | 느린모드]
   {
     data: new SlashCommandBuilder()
-      .setName("채널잠금")
-      .setDescription("채널의 메시지 전송 권한을 잠그거나 해제합니다. (관리자 전용)")
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-      .addStringOption((opt) =>
-        opt
-          .setName("동작")
-          .setDescription("잠금 또는 해제 선택")
-          .setRequired(true)
-          .addChoices(
-            { name: "잠금", value: "lock" },
-            { name: "해제", value: "unlock" }
+      .setName("채널")
+      .setDescription("채널 상태 및 권한 제어 (관리자 전용)")
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
+      .addSubcommand((sub) =>
+        sub
+          .setName("잠금")
+          .setDescription("채널의 일반 멤버 메시지 전송을 잠그거나 해제합니다.")
+          .addBooleanOption((opt) => opt.setName("잠금여부").setDescription("true: 잠금, false: 잠금 해제").setRequired(true))
+          .addChannelOption((opt) =>
+            opt.setName("채널").setDescription("대상 채널 (미지정 시 현재 채널)").addChannelTypes(ChannelType.GuildText)
           )
       )
-      .addChannelOption((opt) =>
-        opt
-          .setName("채널")
-          .setDescription("대상 채널 (미지정 시 현재 채널)")
-          .addChannelTypes(ChannelType.GuildText)
+      .addSubcommand((sub) =>
+        sub
+          .setName("느린모드")
+          .setDescription("채널 슬로우모드(메시지 전송 딜레이)를 설정합니다.")
+          .addIntegerOption((opt) =>
+            opt.setName("초").setDescription("지연 시간 (0 = 해제, 최대 21600초)").setRequired(true).setMinValue(0).setMaxValue(21600)
+          )
+          .addChannelOption((opt) =>
+            opt.setName("채널").setDescription("대상 채널 (미지정 시 현재 채널)").addChannelTypes(ChannelType.GuildText)
+          )
       ),
 
     async execute(interaction: ChatInputCommandInteraction) {
-      if (!interaction.guild || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-        await interaction.reply({ content: "관리자 권한이 부족합니다.", ephemeral: true });
+      if (!interaction.guild || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+        await interaction.reply({ content: "채널 관리 권한이 필요합니다.", ephemeral: true });
         return;
       }
 
-      const action = interaction.options.getString("동작", true);
+      const subcommand = interaction.options.getSubcommand();
       const targetChannel = (interaction.options.getChannel("채널") || interaction.channel) as TextChannel;
 
       if (!targetChannel || targetChannel.type !== ChannelType.GuildText) {
-        await interaction.reply({ content: "유효한 텍스트 채널을 찾을 수 없습니다.", ephemeral: true });
+        await interaction.reply({ content: "유효한 텍스트 채널이 아닙니다.", ephemeral: true });
         return;
       }
 
-      const everyoneRole = interaction.guild.roles.everyone;
-      const currentPermissions = targetChannel.permissionOverwrites.cache.get(everyoneRole.id);
-      const isCurrentlyLocked = currentPermissions?.deny.has(PermissionFlagsBits.SendMessages) ?? false;
+      if (subcommand === "잠금") {
+        const shouldLock = interaction.options.getBoolean("잠금여부", true);
+        const everyoneRole = interaction.guild.roles.everyone;
 
-      if (action === "lock") {
-        if (isCurrentlyLocked) {
+        try {
+          await targetChannel.permissionOverwrites.edit(everyoneRole, {
+            SendMessages: shouldLock ? false : null,
+          });
+
           const container = ComponentsV2Builder.container(
             [
               ComponentsV2Builder.text(
-                `# ${EMOJI_STRINGS.EXCLAMATION} 채널 잠금 실패\n<#${targetChannel.id}> 채널은 **이미 잠금 상태**입니다.`
+                `# ${shouldLock ? EMOJI_STRINGS.EXCLAMATION : EMOJI_STRINGS.CHECK} 채널 ${shouldLock ? "잠금 완료" : "잠금 해제 완료"}\n<#${targetChannel.id}> 채널의 일반 멤버 채팅이 ${shouldLock ? "**잠금(금지)**" : "**해제(허용)**"}되었습니다.`
               ),
             ],
-            0xed4245
+            shouldLock ? 0xed4245 : 0x57f287
           );
           await interaction.reply(ComponentsV2Builder.formatMessage(container, true));
-          return;
+        } catch (err: any) {
+          await interaction.reply({ content: `채널 잠금 처리 실패: ${err.message}`, ephemeral: true });
         }
+        return;
+      }
 
-        await targetChannel.permissionOverwrites.edit(everyoneRole, {
-          SendMessages: false,
-        });
-
-        const container = ComponentsV2Builder.container(
-          [
-            ComponentsV2Builder.text(
-              `# ${EMOJI_STRINGS.CHECK} 채널 잠금 완료\n<#${targetChannel.id}> 채널이 성공적으로 **잠금**되었습니다.\n일반 멤버의 메시지 전송이 제한됩니다.`
-            ),
-          ],
-          0x5865f2
-        );
-        await interaction.reply(ComponentsV2Builder.formatMessage(container, true));
-      } else {
-        if (!isCurrentlyLocked) {
+      if (subcommand === "느린모드") {
+        const seconds = interaction.options.getInteger("초", true);
+        try {
+          await targetChannel.setRateLimitPerUser(seconds);
           const container = ComponentsV2Builder.container(
             [
               ComponentsV2Builder.text(
-                `# ${EMOJI_STRINGS.EXCLAMATION} 채널 잠금 해제 실패\n<#${targetChannel.id}> 채널은 **이미 잠금 해제 상태**입니다.`
+                `# ${EMOJI_STRINGS.CHECK} 슬로우모드 설정 완료\n<#${targetChannel.id}> 채널의 슬로우모드가 **${seconds === 0 ? "해제" : `${seconds}초`}**로 설정되었습니다.`
               ),
             ],
-            0xed4245
+            0x57f287
           );
           await interaction.reply(ComponentsV2Builder.formatMessage(container, true));
-          return;
+        } catch (err: any) {
+          await interaction.reply({ content: `슬로우모드 설정 실패: ${err.message}`, ephemeral: true });
         }
-
-        await targetChannel.permissionOverwrites.edit(everyoneRole, {
-          SendMessages: null,
-        });
-
-        const container = ComponentsV2Builder.container(
-          [
-            ComponentsV2Builder.text(
-              `# ${EMOJI_STRINGS.CHECK} 채널 잠금 해제 완료\n<#${targetChannel.id}> 채널의 잠금이 성공적으로 **해제**되었습니다.`
-            ),
-          ],
-          0x57f287
-        );
-        await interaction.reply(ComponentsV2Builder.formatMessage(container, true));
-      }
-    },
-  },
-
-  // 2. /채널삭제
-  {
-    data: new SlashCommandBuilder()
-      .setName("채널삭제")
-      .setDescription("지정한 채널을 삭제합니다. (관리자 전용 / 재확인 필수)")
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-      .addChannelOption((opt) =>
-        opt
-          .setName("채널")
-          .setDescription("삭제할 채널 (미지정 시 현재 채널)")
-      ),
-
-    async execute(interaction: ChatInputCommandInteraction) {
-      if (!interaction.guild || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-        await interaction.reply({ content: "관리자 권한이 부족합니다.", ephemeral: true });
         return;
       }
-
-      const targetChannel = interaction.options.getChannel("채널") || interaction.channel;
-      if (!targetChannel) {
-        await interaction.reply({ content: "삭제할 대상 채널을 찾을 수 없습니다.", ephemeral: true });
-        return;
-      }
-
-      const container = ComponentsV2Builder.container(
-        [
-          ComponentsV2Builder.text(
-            `# ${EMOJI_STRINGS.EXCLAMATION} 채널 영구 삭제 확인\n**정말로 이 채널을 삭제하시겠습니까?**\n\n• **대상 채널:** <#${targetChannel.id}> (${(targetChannel as any).name})\n• **영향 범위:** 채널 내 모든 메시지 및 설정 영구 삭제 (복구 불가)\n\n아래 체크 버튼을 누르면 즉시 삭제됩니다.`
-          ),
-          ComponentsV2Builder.separator(true, 1),
-          ComponentsV2Builder.actionRow(
-            ComponentsV2Builder.emojiButton("CHECK", `confirm_channel_delete_${targetChannel.id}`),
-            ComponentsV2Builder.emojiButton("CANCEL", "cancel_action")
-          ),
-        ],
-        0xed4245
-      );
-
-      await interaction.reply(ComponentsV2Builder.formatMessage(container, true));
-    },
-  },
-
-  // 3. /채널설정
-  {
-    data: new SlashCommandBuilder()
-      .setName("채널설정")
-      .setDescription("채널의 이름 변경 및 역할별 권한을 설정합니다. (관리자 전용)")
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-      .addChannelOption((opt) =>
-        opt.setName("채널").setDescription("설정할 채널 (미지정 시 현재 채널)")
-      ),
-
-    async execute(interaction: ChatInputCommandInteraction) {
-      if (!interaction.guild || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-        await interaction.reply({ content: "관리자 권한이 부족합니다.", ephemeral: true });
-        return;
-      }
-
-      const target = (interaction.options.getChannel("채널") || interaction.channel) as TextChannel;
-      if (!target) {
-        await interaction.reply({ content: "채널을 찾을 수 없습니다.", ephemeral: true });
-        return;
-      }
-
-      const container = ComponentsV2Builder.container(
-        [
-          ComponentsV2Builder.text(
-            `# ${EMOJI_STRINGS.SETTINGS} 채널 상세 설정: #${target.name}\n**대상:** <#${target.id}>\n\n채널 이름을 변경하거나 역할별 권한을 구성할 수 있습니다.`
-          ),
-          ComponentsV2Builder.separator(true, 1),
-          ComponentsV2Builder.actionRow(
-            ComponentsV2Builder.button("채널 이름 변경", `channel_rename_modal_${target.id}`),
-            ComponentsV2Builder.button("역할 권한 관리", `channel_permissions_role_${target.id}`)
-          ),
-          ComponentsV2Builder.separator(false, 1),
-          ComponentsV2Builder.actionRow(
-            ComponentsV2Builder.emojiButton("CANCEL", "cancel_action")
-          ),
-        ],
-        0x5865f2
-      );
-
-      await interaction.reply(ComponentsV2Builder.formatMessage(container, true));
     },
   },
 ];
