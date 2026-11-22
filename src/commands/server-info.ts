@@ -39,6 +39,10 @@ export const serverInfoCommands = [
             ComponentsV2Builder.text(
               `# ${EMOJI_STRINGS.KCS} ${guild.name} 서버 정보\n\n• **서버 ID:** \`${guild.id}\`\n• **소유자:** ${owner ? `<@${owner.id}> (${owner.user.tag})` : "확인 불가"}\n• **개설일:** ${createdAt}\n• **총 멤버 수:** **${memberCount.toLocaleString()}명**\n• **채널 수:** ${channelCount}개\n• **역할 수:** ${roleCount}개\n• **서버 부스트:** ${boostCount}개 (레벨 ${boostTier})\n• **보안 레벨:** ${guild.verificationLevel}`
             ),
+            ComponentsV2Builder.separator(true, 1),
+            ComponentsV2Builder.actionRow(
+              ComponentsV2Builder.button("새로고침", "server_info_refresh")
+            ),
           ],
           0x5865f2
         );
@@ -68,6 +72,11 @@ export const serverInfoCommands = [
           [
             ComponentsV2Builder.text(
               `# ${EMOJI_STRINGS.SETTINGS} ${guild.name} — Sora 봇 설정 현황\n\n• **인증 시스템:** ${vMethods} (채널: ${vChannel})\n• **입장 환영 메시지:** ${welcomeStatus}\n• **퇴장 메시지:** ${goodbyeStatus}\n• **문의(티켓) 시스템:** ${ticketStatus}\n• **자동 지급 역할:** ${autoRolesCount}개 규칙 등록됨\n• **정기 자동 메시지:** ${autoMsgCount}개 활성화됨\n\n> 웹 대시보드(https://sora.koharu.live/dashboard)에서 모든 설정을 마우스 클릭으로 간편하게 변경할 수 있습니다.`
+            ),
+            ComponentsV2Builder.separator(true, 1),
+            ComponentsV2Builder.actionRow(
+              ComponentsV2Builder.button("새로고침", "server_settings_refresh"),
+              ComponentsV2Builder.linkButton("대시보드 열기", "https://sora.koharu.live/dashboard")
             ),
           ],
           0x5865f2

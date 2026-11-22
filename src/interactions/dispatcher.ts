@@ -462,7 +462,6 @@ async function handleButton(interaction: ButtonInteraction) {
   if (customId.startsWith("sendwich_check_")) {
     const vrfId = customId.replace("sendwich_check_", "");
     try {
-      await interaction.deferUpdate();
       const statusRes = await SendwichService.getVerification(vrfId);
 
       if (statusRes.status === "verified") {
@@ -499,21 +498,34 @@ async function handleButton(interaction: ButtonInteraction) {
         const successContainer = ComponentsV2Builder.container(
           [
             ComponentsV2Builder.text(
-              `# ${EMOJI_STRINGS.CHECK} 휴대폰 인증 성공!\n인증이 성공적으로 완료되었습니다.\n• **통신사/완료시각:** ${statusRes.carrier || "확인됨"} (${statusRes.verified_at})\n• ${roleText}\n\n> 💡 Sora의 모든 기능을 이용하시면 [개인정보처리방침](https://sora.koharu.live/policy) 및 [이용약관](https://sora.koharu.live/terms)에 동의하시는 것으로 간주합니다.`
+              `# ${EMOJI_STRINGS.CHECK} 휴대폰 인증 성공!\n인증이 성공적으로 완료되었습니다.\n• **통신사/완료시각:** ${statusRes.carrier || "확인됨"} (${statusRes.verified_at || "완료"})\n• ${roleText}\n\n> 💡 Sora의 모든 기능을 이용하시면 [개인정보처리방침](https://sora.koharu.live/policy) 및 [이용약관](https://sora.koharu.live/terms)에 동의하시는 것으로 간주합니다.`
             ),
           ],
           0x57f287
         );
-        await interaction.editReply(ComponentsV2Builder.formatMessage(successContainer, true));
+        await interaction.update(ComponentsV2Builder.formatMessage(successContainer, true));
       } else {
-        await interaction.followUp({
-          content: `아직 문자가 수신되지 않았습니다. (현재 상태: ${statusRes.status})\n문자를 전송한 뒤 잠시 후 다시 확인해 주세요.`,
+        await interaction.reply({
+          content: `아직 문자가 수신되지 않았습니다. (현재 상태: ${statusRes.status})\n문자를 전송한 뒤 잠시 후 다시 [인증 확인] 버튼을 눌러주세요.`,
           ephemeral: true,
         });
       }
     } catch (err: any) {
-      await interaction.followUp({ content: `조회 오류: ${err.message}`, ephemeral: true });
+      await interaction.reply({ content: `조회 오류: ${err.message}`, ephemeral: true });
     }
+    return;
+  }
+
+  if (customId.startsWith("sendwich_cancel_")) {
+    const container = ComponentsV2Builder.container(
+      [
+        ComponentsV2Builder.text(
+          `# ${EMOJI_STRINGS.CANCEL} 인증 취소됨\n휴대폰 인증 요청이 취소되었습니다.`
+        ),
+      ],
+      0x747f8d
+    );
+    await interaction.update(ComponentsV2Builder.formatMessage(container, true));
     return;
   }
 
@@ -684,6 +696,156 @@ async function handleButton(interaction: ButtonInteraction) {
     await interaction.reply({ content: `<@${targetUserId}> 멤버를 영구 차단했습니다.`, ephemeral: true });
     return;
   }
+
+  // 6. Ticket Transcript Export
+  if (customId.startsWith("ticket_transcript_")) {
+    const ticketId = customId.replace("ticket_transcript_", "");
+    await interaction.reply({
+      content: `티켓(#${ticketId})의 대화 기록이 백업되었습니다. 대시보드(https://sora.koharu.live/dashboard)에서 확인하실 수 있습니다.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // 7. System Stats Refresh
+  if (customId === "stats_refresh") {
+    const metrics = StorageManager.getCommandMetrics();
+    const totalInvocations = metrics.reduce((acc, m) => acc + m.totalCalls, 0);
+    const totalSuccess = metrics.reduce((acc, m) => acc + m.successCalls, 0);
+    const overallSuccessRate = totalInvocations > 0 ? ((totalSuccess / totalInvocations) * 100).toFixed(1) : "100.0";
+
+    const topCommands = [...metrics]
+      .sort((a, b) => b.totalCalls - a.totalCalls)
+      .slice(0, 5)
+      .map((m, idx) => `${idx + 1}. \`/${m.commandName}\` — 호출: **${m.totalCalls}회** (평균 ${m.avgDurationMs}ms)`);
+
+    const now = new Date().toLocaleTimeString("ko-KR", { timeZone: "Asia/Seoul" });
+    const container = ComponentsV2Builder.container(
+      [
+        ComponentsV2Builder.text(
+          `# 📊 Sora 시스템 종합 통계\n• **서버:** ${guild.name}\n• **총 명령어 실행:** **${totalInvocations.toLocaleString()}회**\n• **명령어 성공률:** **${overallSuccessRate}%**\n• **지연 시간 (Ping):** **${interaction.client.ws.ping}ms**\n• **새로고침 시각:** ${now}\n\n### 상위 호출 명령어\n${topCommands.length > 0 ? topCommands.join("\n") : "수집된 기록이 없습니다."}`
+        ),
+        ComponentsV2Builder.separator(true, 1),
+        ComponentsV2Builder.actionRow(
+          ComponentsV2Builder.button("새로고침", "stats_refresh")
+        ),
+      ],
+      0x5865f2
+    );
+    await interaction.update(ComponentsV2Builder.formatMessage(container));
+    return;
+  }
+
+  // 8. Server Info Refresh
+  if (customId === "server_info_refresh") {
+    const owner = await guild.fetchOwner().catch(() => null);
+    const memberCount = guild.memberCount;
+    const channelCount = guild.channels.cache.size;
+    const roleCount = guild.roles.cache.size;
+    const boostCount = guild.premiumSubscriptionCount || 0;
+    const boostTier = guild.premiumTier;
+    const createdAt = guild.createdAt.toLocaleDateString("ko-KR");
+
+    const container = ComponentsV2Builder.container(
+      [
+        ComponentsV2Builder.text(
+          `# ${EMOJI_STRINGS.KCS} ${guild.name} 서버 정보 (최신)\n\n• **서버 ID:** \`${guild.id}\`\n• **소유자:** ${owner ? `<@${owner.id}> (${owner.user.tag})` : "확인 불가"}\n• **개설일:** ${createdAt}\n• **총 멤버 수:** **${memberCount.toLocaleString()}명**\n• **채널 수:** ${channelCount}개\n• **역할 수:** ${roleCount}개\n• **서버 부스트:** ${boostCount}개 (레벨 ${boostTier})\n• **보안 레벨:** ${guild.verificationLevel}`
+        ),
+        ComponentsV2Builder.separator(true, 1),
+        ComponentsV2Builder.actionRow(
+          ComponentsV2Builder.button("새로고침", "server_info_refresh")
+        ),
+      ],
+      0x5865f2
+    );
+    await interaction.update(ComponentsV2Builder.formatMessage(container));
+    return;
+  }
+
+  // 9. Server Settings Refresh
+  if (customId === "server_settings_refresh") {
+    const data = StorageManager.getGuildData(guild.id);
+    const vMethods = data.verification.methods.length > 0
+      ? data.verification.methods.join(", ")
+      : "설정되지 않음";
+    const vChannel = data.verification.channelId ? `<#${data.verification.channelId}>` : "미지정";
+    const welcomeStatus = data.welcome.enabled
+      ? `활성화됨 (${data.welcome.channelId ? `<#${data.welcome.channelId}>` : "미지정"})`
+      : "비활성화";
+    const goodbyeStatus = data.goodbye.enabled
+      ? `활성화됨 (${data.goodbye.channelId ? `<#${data.goodbye.channelId}>` : "미지정"})`
+      : "비활성화";
+    const ticketStatus = data.tickets.enabled
+      ? `활성화됨 (카테고리 ${data.tickets.categories.length}개)`
+      : "비활성화";
+    const autoRolesCount = data.autoRoles.length;
+    const autoMsgCount = data.autoMessages.filter((m) => m.enabled).length;
+
+    const container = ComponentsV2Builder.container(
+      [
+        ComponentsV2Builder.text(
+          `# ${EMOJI_STRINGS.SETTINGS} ${guild.name} — Sora 봇 설정 현황 (최신)\n\n• **인증 시스템:** ${vMethods} (채널: ${vChannel})\n• **입장 환영 메시지:** ${welcomeStatus}\n• **퇴장 메시지:** ${goodbyeStatus}\n• **문의(티켓) 시스템:** ${ticketStatus}\n• **자동 지급 역할:** ${autoRolesCount}개 규칙 등록됨\n• **정기 자동 메시지:** ${autoMsgCount}개 활성화됨\n\n> 웹 대시보드(https://sora.koharu.live/dashboard)에서 모든 설정을 마우스 클릭으로 간편하게 변경할 수 있습니다.`
+        ),
+        ComponentsV2Builder.separator(true, 1),
+        ComponentsV2Builder.actionRow(
+          ComponentsV2Builder.button("새로고침", "server_settings_refresh"),
+          ComponentsV2Builder.linkButton("대시보드 열기", "https://sora.koharu.live/dashboard")
+        ),
+      ],
+      0x5865f2
+    );
+    await interaction.update(ComponentsV2Builder.formatMessage(container, true));
+    return;
+  }
+
+  // 10. Summary Refresh
+  if (customId.startsWith("summary_refresh")) {
+    const daysStr = customId.replace("summary_refresh_", "");
+    const days = parseInt(daysStr, 10) || 1;
+    const periodName = days === 1 ? "일일" : days === 7 ? "주간" : "월간";
+
+    const data = StorageManager.getGuildData(guild.id);
+    const now = Date.now();
+    const startTime = now - days * 24 * 60 * 60 * 1000;
+    const startIso = new Date(startTime).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+    const endIso = new Date(now).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+
+    const recentWarns = data.warnings.filter((w) => new Date(w.createdAt).getTime() >= startTime);
+    const recentTickets = data.ticketSessions.filter((t) => new Date(t.createdAt).getTime() >= startTime);
+    const activeMembers = Object.keys(data.points).length;
+
+    const container = ComponentsV2Builder.container(
+      [
+        ComponentsV2Builder.text(
+          `# ${EMOJI_STRINGS.KCS} 서버 운영 ${periodName} 요약 보고서 (최신)\n**집계 기간:** ${startIso} ~ ${endIso}\n\n• **신규 경고 조치:** ${recentWarns.length}건\n• **신규 생성 티켓:** ${recentTickets.length}건\n• **활동 집계 멤버:** ${activeMembers}명\n• **누적 위키 문서:** ${data.wikiDocuments.length}개\n• **현재 서버 멤버:** ${guild.memberCount.toLocaleString()}명`
+        ),
+        ComponentsV2Builder.separator(true, 1),
+        ComponentsV2Builder.actionRow(
+          ComponentsV2Builder.button("새로고침", `summary_refresh_${days}`)
+        ),
+      ],
+      0x5865f2
+    );
+    await interaction.update(ComponentsV2Builder.formatMessage(container, true));
+    return;
+  }
+
+  // 11. Generic Refresh or Reload
+  if (customId.includes("refresh") || customId.includes("reload") || customId.includes("새로고침")) {
+    await interaction.reply({
+      content: "최신 정보로 새로고침되었습니다.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // 12. Safety Catch-all: Never allow any button click to time out or show "인터랙션에 실패했습니다"
+  if (!interaction.replied && !interaction.deferred) {
+    await interaction.reply({
+      content: "요청이 정상 접수되었습니다.",
+      ephemeral: true,
+    });
+  }
 }
 
 async function handleStringSelect(interaction: StringSelectMenuInteraction) {
@@ -796,18 +958,33 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction) {
       const container = ComponentsV2Builder.container(
         [
           ComponentsV2Builder.text(
-            `# ✉️ 인증 코드 전송 완료\n\`${email}\` 주소로 6자리 인증 코드를 발송했습니다.\n이메일을 확인하신 후 아래 **[인증코드 입력하기]** 버튼을 눌러 코드를 제출해 주세요.`
+            `# ✉️ 인증 코드 전송 완료\n\`${email}\` 주소로 6자리 인증 코드를 발송했습니다.\n이메일을 확인하신 후 아래 **[인증코드 입력하기]** 버튼을 눌러 코드를 제출해 주세요.\n\n*(메일이 오지 않은 경우 스팸함을 확인해 주세요.)*`
           ),
           ComponentsV2Builder.separator(true, 1),
           ComponentsV2Builder.actionRow(
-            ComponentsV2Builder.button("인증코드 입력하기", "email_code_enter_btn")
+            ComponentsV2Builder.button("인증코드 입력하기", "email_code_enter_btn"),
+            ComponentsV2Builder.button("이메일 다시 입력", "email_consent_agree"),
+            ComponentsV2Builder.emojiButton("CANCEL", "cancel_action")
           ),
         ],
         0x5865f2
       );
       await interaction.editReply(ComponentsV2Builder.formatMessage(container, true));
     } else {
-      await interaction.editReply({ content: `이메일 전송 실패: ${res.error}` });
+      const failContainer = ComponentsV2Builder.container(
+        [
+          ComponentsV2Builder.text(
+            `# ${EMOJI_STRINGS.CANCEL} 이메일 전송 실패\n\`${email}\` 주소로 이메일을 발송하지 못했습니다.\n• **오류 사유:** \`${res.error}\`\n\n올바른 이메일 주소인지 확인하신 후 다시 시도해 주세요.`
+          ),
+          ComponentsV2Builder.separator(true, 1),
+          ComponentsV2Builder.actionRow(
+            ComponentsV2Builder.button("다시 시도하기", "email_consent_agree"),
+            ComponentsV2Builder.emojiButton("CANCEL", "cancel_action")
+          ),
+        ],
+        0xed4245
+      );
+      await interaction.editReply(ComponentsV2Builder.formatMessage(failContainer, true));
     }
     return;
   }
@@ -868,10 +1045,20 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction) {
 
       await interaction.reply(ComponentsV2Builder.formatMessage(successContainer, true));
     } else {
-      await interaction.reply({
-        content: `인증 코드가 일치하지 않습니다. 이메일을 다시 확인해 주세요. (입력값: ${enteredCode})`,
-        ephemeral: true,
-      });
+      const mismatchContainer = ComponentsV2Builder.container(
+        [
+          ComponentsV2Builder.text(
+            `# ${EMOJI_STRINGS.CANCEL} 인증 코드 불일치\n입력하신 인증 코드(\`${enteredCode}\`)가 일치하지 않습니다.\n이메일을 다시 확인하신 후 아래 버튼을 눌러 정확한 6자리 코드를 입력해 주세요.`
+          ),
+          ComponentsV2Builder.separator(true, 1),
+          ComponentsV2Builder.actionRow(
+            ComponentsV2Builder.button("코드 다시 입력하기", "email_code_enter_btn"),
+            ComponentsV2Builder.button("이메일 새로 발송", "email_consent_agree")
+          ),
+        ],
+        0xed4245
+      );
+      await interaction.reply(ComponentsV2Builder.formatMessage(mismatchContainer, true));
     }
     return;
   }

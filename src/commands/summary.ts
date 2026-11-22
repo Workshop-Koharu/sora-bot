@@ -27,6 +27,10 @@ function buildSummary(
       ComponentsV2Builder.text(
         `# ${EMOJI_STRINGS.KCS} 서버 운영 ${periodName} 요약 보고서\n**집계 기간:** ${startIso} ~ ${endIso}\n\n• **신규 경고 조치:** ${recentWarns.length}건\n• **신규 생성 티켓:** ${recentTickets.length}건\n• **활동 집계 멤버:** ${activeMembers}명\n• **누적 위키 문서:** ${data.wikiDocuments.length}개\n• **현재 서버 멤버:** ${interaction.guild?.memberCount.toLocaleString()}명`
       ),
+      ComponentsV2Builder.separator(true, 1),
+      ComponentsV2Builder.actionRow(
+        ComponentsV2Builder.button("새로고침", `summary_refresh_${days}`)
+      ),
     ],
     0x5865f2
   );

@@ -30,6 +30,10 @@ export const statsCommand = {
         ComponentsV2Builder.text(
           `# 📊 Sora 시스템 종합 통계\n• **서버:** ${interaction.guild.name}\n• **총 명령어 실행:** **${totalInvocations.toLocaleString()}회**\n• **명령어 성공률:** **${overallSuccessRate}%**\n• **지연 시간 (Ping):** **${interaction.client.ws.ping}ms**\n\n### 상위 호출 명령어\n${topCommands.length > 0 ? topCommands.join("\n") : "수집된 기록이 없습니다."}`
         ),
+        ComponentsV2Builder.separator(true, 1),
+        ComponentsV2Builder.actionRow(
+          ComponentsV2Builder.button("새로고침", "stats_refresh")
+        ),
       ],
       0x5865f2
     );
