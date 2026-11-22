@@ -18,6 +18,13 @@ for (const cmd of getAllCommands()) {
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`[Sora] Logged in as ${readyClient.user.tag}`);
 
+  // Initialize Supabase PostgreSQL Storage
+  try {
+    await StorageManager.initialize();
+  } catch (err) {
+    console.error("[Sora] Failed to initialize Supabase PostgreSQL storage:", err);
+  }
+
   const token = process.env.DISCORD_TOKEN;
   const clientId = process.env.DISCORD_CLIENT_ID || readyClient.user.id;
   const guildId = process.env.DISCORD_GUILD_ID;

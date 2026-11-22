@@ -1,29 +1,99 @@
 import fs from "node:fs";
 import path from "node:path";
+import { dbPool } from "./db.js";
 import {
   GuildDataStore,
   CommandStatsRecord,
-  VerificationSession,
-  WarningRecord,
-  ModerationAuditRecord,
-  WikiDocument,
-  UserPointRecord,
 } from "../types/index.js";
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const GUILDS_DIR = path.join(DATA_DIR, "guilds");
 const GLOBAL_STATS_FILE = path.join(DATA_DIR, "global_stats.json");
 
-// Ensure data directories exist
 if (!fs.existsSync(GUILDS_DIR)) {
-  fs.mkdirSync(GUILDS_DIR, { recursive: true });
+  try {
+    fs.mkdirSync(GUILDS_DIR, { recursive: true });
+  } catch {}
 }
 
 export class StorageManager {
   private static cache: Map<string, GuildDataStore> = new Map();
   private static statsCache: Map<string, CommandStatsRecord> = new Map();
+  private static isInitialized = false;
 
-  private static getDefaultGuildData(guildId: string): GuildDataStore {
+  public static async initialize(): Promise<void> {
+    if (this.isInitialized) return;
+    try {
+      console.log("[StorageManager] Initializing and preloading from Supabase PostgreSQL...");
+
+      // 1. Ensure tables exist
+      await dbPool.query(`
+        CREATE TABLE IF NOT EXISTS guild_configs (
+          guild_id TEXT PRIMARY KEY,
+          data JSONB NOT NULL DEFAULT '{}'::jsonb,
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS command_metrics (
+          command_name TEXT PRIMARY KEY,
+          total_calls INT NOT NULL DEFAULT 0,
+          success_calls INT NOT NULL DEFAULT 0,
+          fail_calls INT NOT NULL DEFAULT 0,
+          avg_duration_ms INT NOT NULL DEFAULT 0,
+          last_used_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS user_sessions (
+          user_id TEXT PRIMARY KEY,
+          session_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+      `);
+
+      // 2. Preload all guilds into memory cache
+      const guildRes = await dbPool.query("SELECT guild_id, data FROM guild_configs");
+      for (const row of guildRes.rows) {
+        const parsed = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+        const merged = { ...this.getDefaultGuildData(row.guild_id), ...parsed };
+        this.cache.set(row.guild_id, merged);
+      }
+      console.log(`[StorageManager] Preloaded ${guildRes.rows.length} guilds from Supabase.`);
+
+      // 3. Preload all command metrics
+      const statsRes = await dbPool.query("SELECT * FROM command_metrics");
+      for (const row of statsRes.rows) {
+        this.statsCache.set(row.command_name, {
+          commandName: row.command_name,
+          totalCalls: Number(row.total_calls),
+          successCalls: Number(row.success_calls),
+          failCalls: Number(row.fail_calls),
+          avgDurationMs: Number(row.avg_duration_ms),
+          lastUsedAt: row.last_used_at ? new Date(row.last_used_at).toISOString() : new Date().toISOString(),
+        });
+      }
+      console.log(`[StorageManager] Preloaded ${statsRes.rows.length} metrics from Supabase.`);
+
+      this.isInitialized = true;
+    } catch (err: any) {
+      console.error("[StorageManager] Warning: Supabase preloading error, falling back to local files:", err.message);
+      this.loadLocalFallbacks();
+    }
+  }
+
+  private static loadLocalFallbacks(): void {
+    if (fs.existsSync(GUILDS_DIR)) {
+      try {
+        const files = fs.readdirSync(GUILDS_DIR).filter((f) => f.endsWith(".json"));
+        for (const file of files) {
+          const guildId = file.replace(".json", "");
+          const raw = fs.readFileSync(path.join(GUILDS_DIR, file), "utf-8");
+          const parsed = JSON.parse(raw);
+          this.cache.set(guildId, { ...this.getDefaultGuildData(guildId), ...parsed });
+        }
+      } catch {}
+    }
+    this.loadStats();
+  }
+
+  public static getDefaultGuildData(guildId: string): GuildDataStore {
     return {
       guildId,
       verification: {
@@ -71,6 +141,7 @@ export class StorageManager {
       return this.cache.get(guildId)!;
     }
 
+    // Try reading from local file if cache miss
     const filePath = path.join(GUILDS_DIR, `${guildId}.json`);
     if (fs.existsSync(filePath)) {
       try {
@@ -79,9 +150,7 @@ export class StorageManager {
         const merged = { ...this.getDefaultGuildData(guildId), ...parsed };
         this.cache.set(guildId, merged);
         return merged;
-      } catch (err) {
-        console.error(`Error reading data for guild ${guildId}:`, err);
-      }
+      } catch {}
     }
 
     const def = this.getDefaultGuildData(guildId);
@@ -90,30 +159,42 @@ export class StorageManager {
   }
 
   /**
-   * Save guild data store atomically
+   * Save guild data store to Supabase PostgreSQL & cache
    */
   public static saveGuildData(data: GuildDataStore): void {
     this.cache.set(data.guildId, data);
-    const filePath = path.join(GUILDS_DIR, `${data.guildId}.json`);
-    const tempPath = `${filePath}.tmp.${Date.now()}`;
 
+    // 1. Asynchronously persist to Supabase PostgreSQL
+    dbPool
+      .query(
+        `
+        INSERT INTO guild_configs (guild_id, data, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (guild_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();
+      `,
+        [data.guildId, JSON.stringify(data)]
+      )
+      .catch((err) => {
+        console.warn(`[StorageManager] Failed to persist guild ${data.guildId} to Supabase:`, err.message);
+      });
+
+    // 2. Best-effort local file backup
     try {
+      const filePath = path.join(GUILDS_DIR, `${data.guildId}.json`);
+      const tempPath = `${filePath}.tmp.${Date.now()}`;
       fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), "utf-8");
       fs.renameSync(tempPath, filePath);
-    } catch (err) {
-      console.error(`Failed to atomically save guild data ${data.guildId}:`, err);
-    }
+    } catch {}
   }
 
   /**
-   * Record command execution stats (for developer /명령어통계)
+   * Record command execution stats (to Supabase PostgreSQL & memory cache)
    */
   public static recordCommandMetric(
     commandName: string,
     success: boolean,
     durationMs: number
   ): void {
-    this.loadStats();
     let metric = this.statsCache.get(commandName);
     if (!metric) {
       metric = {
@@ -139,37 +220,52 @@ export class StorageManager {
     metric.lastUsedAt = new Date().toISOString();
 
     this.statsCache.set(commandName, metric);
+
+    // Asynchronously update Supabase PostgreSQL
+    dbPool
+      .query(
+        `
+        INSERT INTO command_metrics (command_name, total_calls, success_calls, fail_calls, avg_duration_ms, last_used_at)
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        ON CONFLICT (command_name) DO UPDATE SET
+          total_calls = EXCLUDED.total_calls,
+          success_calls = EXCLUDED.success_calls,
+          fail_calls = EXCLUDED.fail_calls,
+          avg_duration_ms = EXCLUDED.avg_duration_ms,
+          last_used_at = NOW();
+      `,
+        [metric.commandName, metric.totalCalls, metric.successCalls, metric.failCalls, metric.avgDurationMs]
+      )
+      .catch(() => {});
+
+    // Best-effort local file backup
     this.saveStats();
   }
 
   public static getCommandMetrics(): CommandStatsRecord[] {
-    this.loadStats();
     return Array.from(this.statsCache.values());
   }
 
   private static loadStats(): void {
-    if (this.statsCache.size > 0) return;
     if (fs.existsSync(GLOBAL_STATS_FILE)) {
       try {
         const raw = fs.readFileSync(GLOBAL_STATS_FILE, "utf-8");
         const list: CommandStatsRecord[] = JSON.parse(raw);
         for (const item of list) {
-          this.statsCache.set(item.commandName, item);
+          if (!this.statsCache.has(item.commandName)) {
+            this.statsCache.set(item.commandName, item);
+          }
         }
-      } catch (err) {
-        console.error("Failed to load global command stats:", err);
-      }
+      } catch {}
     }
   }
 
   private static saveStats(): void {
-    const list = Array.from(this.statsCache.values());
-    const temp = `${GLOBAL_STATS_FILE}.tmp.${Date.now()}`;
     try {
-      fs.writeFileSync(temp, JSON.stringify(list, null, 2), "utf-8");
-      fs.renameSync(temp, GLOBAL_STATS_FILE);
-    } catch (err) {
-      console.error("Failed to save global stats:", err);
-    }
+      const list = Array.from(this.statsCache.values());
+      const tempPath = `${GLOBAL_STATS_FILE}.tmp.${Date.now()}`;
+      fs.writeFileSync(tempPath, JSON.stringify(list, null, 2), "utf-8");
+      fs.renameSync(tempPath, GLOBAL_STATS_FILE);
+    } catch {}
   }
 }
