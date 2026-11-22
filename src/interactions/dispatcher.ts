@@ -15,6 +15,7 @@ import {
 } from "discord.js";
 import { ComponentsV2Builder } from "../components-v2/builder.js";
 import { StorageManager } from "../database/storage.js";
+import { UserManager } from "../database/users.js";
 import { SendwichService } from "../services/sendwich.js";
 import { ResendService } from "../services/resend.js";
 import { CaptchaService } from "../services/captcha.js";
@@ -494,6 +495,18 @@ async function handleButton(interaction: ButtonInteraction) {
         const roleText = roleAssigned
           ? `<@&${roleId}> 역할이 정상 지급되었습니다!`
           : "휴대폰 소유권이 확인되었습니다!";
+
+        // Update dedicated user profile in Supabase & data/users/{userId}.json
+        try {
+          const userProfile = UserManager.getUser(user.id);
+          userProfile.verification.phoneVerified = true;
+          userProfile.verification.phoneCarrier = statusRes.carrier || "확인됨";
+          userProfile.verification.phoneVerifiedAt = new Date().toISOString();
+          if (!userProfile.badges.includes("VERIFIED_PHONE")) {
+            userProfile.badges.push("VERIFIED_PHONE");
+          }
+          UserManager.saveUser(userProfile);
+        } catch {}
 
         const successContainer = ComponentsV2Builder.container(
           [
@@ -1033,6 +1046,17 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction) {
       const roleMsg = roleAssigned
         ? `<@&${roleId}> 역할이 정상 지급되었습니다!`
         : "이메일 소유권이 확인되었습니다!";
+
+      // Update dedicated user profile in Supabase & data/users/{userId}.json
+      try {
+        const userProfile = UserManager.getUser(user.id);
+        userProfile.verification.emailVerified = true;
+        userProfile.verification.emailVerifiedAt = new Date().toISOString();
+        if (!userProfile.badges.includes("VERIFIED_EMAIL")) {
+          userProfile.badges.push("VERIFIED_EMAIL");
+        }
+        UserManager.saveUser(userProfile);
+      } catch {}
 
       const successContainer = ComponentsV2Builder.container(
         [

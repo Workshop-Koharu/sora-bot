@@ -5,6 +5,7 @@ import { Events, Collection, TextChannel, PermissionFlagsBits } from "discord.js
 import { createDiscordClient, getAllCommands, registerCommands } from "./client.js";
 import { handleInteraction } from "./interactions/dispatcher.js";
 import { StorageManager } from "./database/storage.js";
+import { UserManager } from "./database/users.js";
 import { ComponentsV2Builder } from "./components-v2/builder.js";
 import { EMOJI_STRINGS } from "./constants/emojis.js";
 
@@ -18,9 +19,10 @@ for (const cmd of getAllCommands()) {
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`[Sora] Logged in as ${readyClient.user.tag}`);
 
-  // Initialize Supabase PostgreSQL Storage
+  // Initialize Supabase PostgreSQL Storage & User Manager
   try {
     await StorageManager.initialize();
+    await UserManager.initialize();
   } catch (err) {
     console.error("[Sora] Failed to initialize Supabase PostgreSQL storage:", err);
   }
@@ -144,8 +146,25 @@ client.on(Events.GuildMemberRemove, async (member) => {
   }
 });
 
+// Global Server Join Event: Automatically initialize isolated database for any server in the world
+client.on(Events.GuildCreate, async (guild) => {
+  console.log(`[Sora Global] Joined new server: ${guild.name} (${guild.id})! Initializing isolated database...`);
+  const data = StorageManager.getGuildData(guild.id);
+  StorageManager.saveGuildData(data);
+});
+
 // Interaction handling
 client.on(Events.InteractionCreate, async (interaction) => {
+  // Automatically track and sync user's isolated database file & Supabase record
+  try {
+    UserManager.touchUser(
+      interaction.user.id,
+      interaction.guildId || undefined,
+      interaction.user.username,
+      interaction.user.avatar || undefined
+    );
+  } catch {}
+
   if (interaction.isChatInputCommand()) {
     const cmd = commands.get(interaction.commandName);
     if (!cmd) return;
